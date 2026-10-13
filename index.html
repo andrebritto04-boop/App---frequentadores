@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Controle de Atividades</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);--bg:#f6f7f9;--card:#fff;--tx:#1d2330;--mu:#6b7280;--bd:#e3e6ec;--ac:#2f5bea;--dg:#dc2626}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#14171d;--card:#1e222b;--tx:#e8eaf0;--mu:#97a0b0;--bd:#2d3340;--ac:#6c8cff;--dg:#f87171}}
+:root[data-theme="dark"]{--bg:#14171d;--card:#1e222b;--tx:#e8eaf0;--mu:#97a0b0;--bd:#2d3340;--ac:#6c8cff;--dg:#f87171}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:640px;margin:0 auto;padding:16px}
+h1{font-size:1.3rem;margin:0 0 4px}
+.sub{color:var(--mu);font-size:.85rem;margin-bottom:14px}
+#note{color:var(--dg);font-size:.85rem;margin-bottom:10px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:12px;margin-bottom:12px}
+input,select{width:100%;padding:11px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--tx);font:inherit;margin-bottom:8px}
+select{margin:0}
+button{font:inherit;border:0;border-radius:8px;padding:10px 14px;background:var(--ac);color:#fff;cursor:pointer}
+button.s{background:transparent;color:var(--tx);border:1px solid var(--bd);padding:6px 10px}
+button:disabled{opacity:.35;cursor:default}
+.item{display:flex;gap:10px;align-items:center;padding:10px 0;border-top:1px solid var(--bd)}
+.item:first-child{border-top:0}
+.rank{min-width:34px;height:34px;border-radius:50%;background:var(--ac);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700}
+.info{flex:1;min-width:0}
+.t{font-weight:600;word-break:break-word}
+.m{color:var(--mu);font-size:.8rem}
+.empty{color:var(--mu);text-align:center;padding:18px 0}
+.bar{display:flex;gap:8px;flex-wrap:wrap}
+.bar button{flex:1}
+.x{color:var(--dg)}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+<main>
+  <h1>📋 Controle de Atividades</h1>
+  <div class="sub" id="sub"></div>
+  <div id="note"></div>
+  <div class="card" id="form">
+    <input id="ativ" placeholder="Atividade" maxlength="200">
+    <input id="sol" placeholder="Solicitante" maxlength="80">
+    <select id="resp" aria-label="Responsável" style="margin-bottom:8px">
+      <option value="">Responsável</option>
+      <option value="Tonhão">Tonhão</option>
+      <option value="Silvio">Silvio</option>
+      <option value="Marcos">Marcos</option>
+      <option value="Andre Britto">Andre Britto</option>
+    </select>
+    <button id="add" style="width:100%">Incluir atividade</button>
+  </div>
+  <div class="card" id="fcard" style="display:none"><select id="fil" aria-label="Filtrar por responsável"></select></div>
+  <div class="card"><div id="list"></div></div>
+  <div class="bar" id="bar"></div>
+</main>
+<script>
+const KEY='controle-atividades-v1';
+const $=id=>document.getElementById(id);
+const fmt=iso=>new Date(iso).toLocaleString('pt-BR',{dateStyle:'short',timeStyle:'medium'});
+function mk(tag,cls,txt){const e=document.createElement(tag);if(cls)e.className=cls;if(txt!=null)e.textContent=txt;return e}
+let db=null,ALL=[],ready=false,mode='coleta',F='',P=null,LOCAL=null,ED=null;
+const NAMES=['Tonhão','Silvio','Marcos','Andre Britto'];
+// ===== CONFIGURAÇÃO DO SUPABASE =====
+const SUPABASE_URL='https://cdkaksnornscxnxavabx.supabase.co';
+const SUPABASE_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNka2Frc25vcm5zY3hueGF2YWJ4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE5MTA3MTQsImV4cCI6MjEwNzQ4NjcxNH0.k-tHrHv9Nuu7QIa0yzKZFL2oPO3Y9MhIhb5CBqF8yso';
+// ====================================
+const sb=window.supabase&&!SUPABASE_URL.startsWith('COLE')?window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY):null;
+const T='atividades';
+const ok=r=>{if(r.error)throw r.error;return r};
+const remoteDB={collection:()=>({
+  doc:id=>{id=id||(Date.now().toString(36)+Math.random().toString(36).slice(2,8));return{
+    set:async v=>{ok(await sb.from(T).upsert(Object.assign({id},v)));refresh()},
+    update:async v=>{ok(await sb.from(T).update(v).eq('id',id));refresh()},
+    delete:async()=>{ok(await sb.from(T).delete().eq('id',id));refresh()}}},
+  onSnapshot:(f,err)=>{subs.push([f,err]);refresh();
+    sb.channel('mudancas').on('postgres_changes',{event:'*',schema:'public',table:T},refresh).subscribe();
+    setInterval(refresh,15000)}
+})};
+const subs=[];let busy=false;
+async function refresh(){
+  if(busy)return;busy=true;
+  try{const {data,error}=await sb.from(T).select('*');if(error)throw error;
+    const snap={docs:data.map(r=>({id:r.id,data:()=>{const o=Object.assign({},r);delete o.id;return o}}))};
+    subs.forEach(([f])=>f(snap))}
+  catch(e){subs.forEach(([,er])=>er&&er(e))}
+  finally{busy=false}
+}
+const downloads={save:async({filename,data})=>{
+  const blob=data instanceof Blob?data:new Blob([data],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=filename;
+  document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+}};
+window.claude={use:async n=>n==='db'?(sb?remoteDB:null):n==='downloads'?downloads:null};
+const col=()=>db.collection('atividades');
+const open=()=>ALL.filter(x=>!x.doneAt).sort((a,b)=>a.pos-b.pos);
+const closed=()=>ALL.filter(x=>x.doneAt).sort((a,b)=>b.doneAt.localeCompare(a.doneAt));
+function note(t){$('note').textContent=t||''}
+async function w(fn){
+  if(!db){note('Armazenamento do navegador indisponível.');return}
+  try{await fn();note('')}catch(e){note(e&&e.code==='invalid_argument'?'Você tem acesso somente leitura.':'Não foi possível salvar. Tente novamente.')}
+}
+function add(){
+  const a=$('ativ').value.trim(),s=$('sol').value.trim(),r=$('resp').value.trim();
+  if(!a||!s||!r){(!a?$('ativ'):!s?$('sol'):$('resp')).focus();return}
+  $('ativ').value='';$('sol').value='';$('resp').value='';$('ativ').focus();
+  w(()=>col().doc().set({text:a,requester:s,owner:r,createdAt:new Date().toISOString(),pos:Date.now(),doneAt:null}));
+}
+function move(x,y){w(async()=>{await col().doc(x.id).update({pos:y.pos});await col().doc(y.id).update({pos:x.pos})})}
+function del(x){
+  if(P===x.id){P=null;w(()=>col().doc(x.id).delete())}
+  else{P=x.id;render();setTimeout(()=>{if(P===x.id){P=null;render()}},3000)}
+}
+function done(x){w(()=>col().doc(x.id).update({doneAt:new Date().toISOString()}))}
+function reopen(x){w(()=>col().doc(x.id).update({doneAt:null,pos:Date.now()}))}
+function imp(){
+  const base=Date.now(),rec=(it,pos,d)=>({text:it.text,requester:it.requester||'',owner:it.owner,createdAt:it.createdAt,pos,doneAt:d});
+  w(async()=>{
+    for(const [i,it] of (LOCAL.items||[]).entries())await col().doc(it.id).set(rec(it,base+i,null));
+    for(const it of (LOCAL.done||[]))await col().doc(it.id).set(rec(it,base,it.doneAt));
+    try{localStorage.removeItem(KEY)}catch(e){}
+    LOCAL=null;
+  }).then(render);
+}
+function setMode(m){mode=m;ED=null;render()}
+function startEdit(it){ED={id:it.id,text:it.text,requester:it.requester||'',owner:it.owner};render()}
+function saveEdit(){
+  const t=ED.text.trim(),s=ED.requester.trim(),o=ED.owner;
+  if(!t||!s||!o){note('Preencha atividade, solicitante e responsável.');return}
+  const id=ED.id;ED=null;render();
+  w(()=>col().doc(id).update({text:t,requester:s,owner:o}));
+}
+function editRow(){
+  const box=mk('div');box.style.cssText='padding:10px 0;border-top:1px solid var(--bd)';
+  const a=document.createElement('input');a.value=ED.text;a.maxLength=200;a.placeholder='Atividade';a.oninput=()=>{ED.text=a.value};
+  const s=document.createElement('input');s.value=ED.requester;s.maxLength=80;s.placeholder='Solicitante';s.oninput=()=>{ED.requester=s.value};
+  const r=document.createElement('select');r.style.marginBottom='8px';
+  const names=NAMES.includes(ED.owner)?NAMES:NAMES.concat([ED.owner]);
+  names.forEach(n=>{const o=mk('option',null,n);o.value=n;r.appendChild(o)});
+  r.value=ED.owner;r.onchange=()=>{ED.owner=r.value};
+  const bt=mk('div','bar');
+  const ok=mk('button',null,'Salvar');ok.onclick=saveEdit;
+  const no=mk('button','s','Cancelar');no.onclick=()=>{ED=null;note('');render()};
+  bt.append(ok,no);box.append(a,s,r,bt);
+  return box;
+}
+
+let R={st:'todas',resp:'',sol:'',ref:'createdAt',de:'',ate:''};
+function ld(iso){const d=new Date(iso);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
+function relRows(){
+  return ALL.filter(x=>{
+    if(R.st==='abertas'&&x.doneAt)return false;
+    if(R.st==='concluidas'&&!x.doneAt)return false;
+    if(R.resp&&x.owner!==R.resp)return false;
+    if(R.sol&&x.requester!==R.sol)return false;
+    if(R.de||R.ate){
+      const v=x[R.ref];if(!v)return false;
+      const d=ld(v);if(R.de&&d<R.de)return false;if(R.ate&&d>R.ate)return false;
+    }
+    return true;
+  }).sort((a,b)=>{
+    if(!a.doneAt&&!b.doneAt)return a.pos-b.pos;
+    if(!a.doneAt)return -1;
+    if(!b.doneAt)return 1;
+    return a.doneAt.localeCompare(b.doneAt);
+  });
+}
+function rk(){const m={};open().forEach((x,i)=>{m[x.id]=i+1});return m}
+async function csv(rows){
+  const q=v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
+  const RK=rk();
+  const lines=[['Prioridade','Atividade','Solicitante','Responsável','Situação','Data de inclusão','Data de conclusão'].map(q).join(';')];
+  rows.forEach(x=>lines.push([x.doneAt?'':RK[x.id],x.text,x.requester||'',x.owner,x.doneAt?'Concluída':'Em aberto',fmt(x.createdAt),x.doneAt?fmt(x.doneAt):''].map(q).join(';')));
+  let dl=null;
+  try{dl=window.claude?await claude.use('downloads'):null}catch(e){dl=null}
+  if(!dl){note('Download indisponível neste navegador.');return}
+  try{await dl.save({filename:'relatorio-atividades-'+ld(new Date().toISOString())+'.csv',data:'\uFEFF'+lines.join('\r\n')});note('')}
+  catch(e){if(!e||e.code!=='declined')note('Não foi possível gerar o arquivo.')}
+}
+async function pdf(rows){
+  const J=window.jspdf&&window.jspdf.jsPDF;
+  if(!J){note('O gerador de PDF não carregou. Verifique a conexão e recarregue a página.');return}
+  let dl=null;
+  try{dl=window.claude?await claude.use('downloads'):null}catch(e){dl=null}
+  if(!dl){note('Download indisponível neste navegador.');return}
+  const doc=new J({unit:'mm',format:'a4'}),W=210,H=297,M=14;let y=M;
+  const need=n=>{if(y+n>H-M){doc.addPage();y=M}};
+  const lines=(t,w)=>doc.splitTextToSize(String(t),w);
+  doc.setFont('helvetica','bold');doc.setFontSize(16);doc.setTextColor(0);
+  doc.text('Relatório de Atividades',M,y+5);y+=10;
+  doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(100);
+  doc.text('Gerado em '+fmt(new Date().toISOString()),M,y);y+=5;
+  const f=[];
+  f.push('Situação: '+({todas:'Todas',abertas:'Em aberto',concluidas:'Concluídas'})[R.st]);
+  if(R.resp)f.push('Responsável: '+R.resp);
+  if(R.sol)f.push('Solicitante: '+R.sol);
+  if(R.de||R.ate)f.push('Período ('+(R.ref==='doneAt'?'conclusão':'inclusão')+'): '+(R.de?R.de.split('-').reverse().join('/'):'início')+' a '+(R.ate?R.ate.split('-').reverse().join('/'):'hoje'));
+  lines(f.join('  |  '),W-2*M).forEach(l=>{doc.text(l,M,y);y+=4.5});
+  y+=2;doc.setDrawColor(200);doc.line(M,y,W-M,y);y+=6;
+  const ab=rows.filter(x=>!x.doneAt).length;
+  doc.setFont('helvetica','bold');doc.setFontSize(11);doc.setTextColor(0);
+  doc.text('Resumo: '+rows.length+' atividade(s) - '+ab+' em aberto, '+(rows.length-ab)+' concluída(s)',M,y);y+=6;
+  doc.setFont('helvetica','normal');doc.setFontSize(9.5);
+  const by={};rows.forEach(x=>{(by[x.owner]=by[x.owner]||{a:0,c:0})[x.doneAt?'c':'a']++});
+  Object.keys(by).sort((a,b)=>a.localeCompare(b,'pt-BR')).forEach(n=>{need(5);doc.text(n+': '+(by[n].a+by[n].c)+' ('+by[n].a+' em aberto, '+by[n].c+' concluída(s))',M,y);y+=5});
+  y+=3;doc.line(M,y,W-M,y);y+=6;
+  const RK=rk();
+  rows.forEach(x=>{
+    const t=lines((x.doneAt?'':RK[x.id]+'o - ')+x.text+(x.doneAt?'  [Concluída]':''),W-2*M);
+    const meta=['Solicitante: '+(x.requester||'-')+'   Responsável: '+x.owner,'Incluída: '+fmt(x.createdAt)+(x.doneAt?'   Concluída: '+fmt(x.doneAt):'')];
+    need(t.length*5+meta.length*4.5+5);
+    doc.setFont('helvetica','bold');doc.setFontSize(10.5);doc.setTextColor(0);
+    t.forEach(l=>{doc.text(l,M,y);y+=5});
+    doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(90);
+    meta.forEach(l=>{doc.text(l,M+4,y);y+=4.5});
+    y+=3;doc.setDrawColor(230);doc.line(M,y-1.5,W-M,y-1.5);
+  });
+  const n=doc.getNumberOfPages();
+  for(let p=1;p<=n;p++){doc.setPage(p);doc.setFontSize(8);doc.setTextColor(130);doc.text('Página '+p+' de '+n,W-M,H-7,{align:'right'})}
+  try{await dl.save({filename:'relatorio-atividades-'+ld(new Date().toISOString())+'.pdf',data:doc.output('blob')});note('')}
+  catch(e){if(!e||e.code!=='declined')note('Não foi possível gerar o PDF.')}
+}
+function field(lbl,el){const w=mk('div');w.style.marginBottom='8px';const l=mk('div','m',lbl);l.style.marginBottom='3px';w.append(l,el);return w}
+function selR(key,opts){const s=document.createElement('select');opts.forEach(([v,t])=>{const o=mk('option',null,t);o.value=v;s.appendChild(o)});s.value=R[key];s.onchange=e=>{R[key]=e.target.value;render()};return s}
+function dtR(key){const i=document.createElement('input');i.type='date';i.value=R[key];i.style.marginBottom='0';i.onchange=e=>{R[key]=e.target.value;render()};return i}
+function renderRel(L,B){
+  $('sub').textContent='Relatório de atividades. As em aberto seguem a ordem de prioridade, e as concluídas vêm depois.';
+  const uniq=k=>[...new Set(ALL.map(x=>x[k]).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'pt-BR')).map(n=>[n,n]);
+  L.appendChild(field('Situação',selR('st',[['todas','Todas'],['abertas','Em aberto'],['concluidas','Concluídas']])));
+  L.appendChild(field('Responsável',selR('resp',[['','Todos']].concat(uniq('owner')))));
+  L.appendChild(field('Solicitante',selR('sol',[['','Todos']].concat(uniq('requester')))));
+  L.appendChild(field('Período por',selR('ref',[['createdAt','Data de inclusão'],['doneAt','Data de conclusão']])));
+  L.appendChild(field('De',dtR('de')));
+  L.appendChild(field('Até',dtR('ate')));
+  const rows=relRows(),ab=rows.filter(x=>!x.doneAt).length,cn=rows.length-ab;
+  const sum=mk('div');sum.style.cssText='border-top:1px solid var(--bd);margin-top:12px;padding-top:12px';
+  sum.appendChild(mk('div','t','Resumo: '+rows.length+' atividade(s)'));
+  sum.appendChild(mk('div','m',ab+' em aberto · '+cn+' concluída(s)'));
+  const by={};rows.forEach(x=>{(by[x.owner]=by[x.owner]||{a:0,c:0})[x.doneAt?'c':'a']++});
+  Object.keys(by).sort((a,b)=>a.localeCompare(b,'pt-BR')).forEach(n=>sum.appendChild(mk('div','m',n+': '+(by[n].a+by[n].c)+' ('+by[n].a+' em aberto, '+by[n].c+' concluída(s))')));
+  L.appendChild(sum);
+  const lst=mk('div');lst.style.marginTop='8px';
+  if(!rows.length)lst.appendChild(mk('div','empty','Nenhuma atividade para os filtros escolhidos.'));
+  const RK=rk();
+  rows.forEach(x=>{
+    const row=mk('div','item'),info=mk('div','info');
+    info.appendChild(mk('div','t',(x.doneAt?'✔ ':RK[x.id]+'º · ')+x.text));
+    info.appendChild(mk('div','m','Solicitante: '+(x.requester||'—')+' · Responsável: '+x.owner));
+    info.appendChild(mk('div','m','Incluída: '+fmt(x.createdAt)+(x.doneAt?' · Concluída: '+fmt(x.doneAt):' · Em aberto')));
+    row.appendChild(info);lst.appendChild(row);
+  });
+  L.appendChild(lst);
+  const p=mk('button',null,'⬇ Gerar PDF ('+rows.length+')');p.disabled=!rows.length;p.onclick=()=>pdf(rows);B.appendChild(p);
+  const e=mk('button','s','⬇ Exportar CSV');e.disabled=!rows.length;e.onclick=()=>csv(rows);B.appendChild(e);
+  const b=mk('button','s','← Voltar');b.onclick=()=>setMode('coleta');B.appendChild(b);
+}
+
+function render(){
+  const L=$('list'),B=$('bar'),pri=mode==='prioridade',cc=mode==='concluidas';
+  L.textContent='';B.textContent='';
+  $('form').style.display=mode==='coleta'?'block':'none';
+  $('fcard').style.display=pri?'block':'none';
+  if(!ready){L.appendChild(mk('div','empty','Carregando…'));return}
+  const items=open(),dn=closed();
+  if(mode==='relatorio'){renderRel(L,B);return}
+  $('sub').textContent=cc?'Atividades concluídas ('+dn.length+').':pri?'Defina a ordem de execução com as setas. A primeira da lista será executada primeiro. Toque numa atividade para editá-la.':'Inclua todas as atividades em aberto. Depois defina a prioridade. Toque numa atividade para editá-la.';
+  if(cc){
+    if(!dn.length)L.appendChild(mk('div','empty','Nenhuma atividade concluída ainda.'));
+    dn.forEach(it=>{
+      const row=mk('div','item'),info=mk('div','info');
+      info.appendChild(mk('div','t','✔ '+it.text));
+      info.appendChild(mk('div','m','Solicitante: '+(it.requester||'—')+' · Responsável: '+it.owner));
+      info.appendChild(mk('div','m','Incluída: '+fmt(it.createdAt)+' · Concluída: '+fmt(it.doneAt)));
+      const b=mk('button','s','Reabrir');b.onclick=()=>reopen(it);
+      row.append(info,b);L.appendChild(row);
+    });
+    const b=mk('button','s','← Voltar');b.onclick=()=>setMode('coleta');B.appendChild(b);
+    return;
+  }
+  const owners=[...new Set(items.map(x=>x.owner))].sort((a,b)=>a.localeCompare(b,'pt-BR'));
+  if(F&&!owners.includes(F))F='';
+  const fil=$('fil');fil.textContent='';
+  const o0=mk('option',null,'Todos os responsáveis');o0.value='';fil.appendChild(o0);
+  owners.forEach(n=>{const o=mk('option',null,n);o.value=n;fil.appendChild(o)});
+  fil.value=F;
+  const view=items.filter(x=>!pri||!F||x.owner===F);
+  if(!view.length)L.appendChild(mk('div','empty','Nenhuma atividade em aberto.'));
+  view.forEach((it,i)=>{
+    if(ED&&ED.id===it.id){L.appendChild(editRow());return}
+    const row=mk('div','item');
+    if(pri)row.appendChild(mk('div','rank',i+1));
+    const info=mk('div','info');
+    info.style.cursor='pointer';info.title='Toque para editar';info.onclick=()=>startEdit(it);
+    info.appendChild(mk('div','t',it.text));
+    info.appendChild(mk('div','m','Solicitante: '+(it.requester||'—')+' · Responsável: '+it.owner+' · 🕒 '+fmt(it.createdAt)));
+    row.appendChild(info);
+    if(pri){
+      const u=mk('button','s','▲'),d=mk('button','s','▼');
+      u.disabled=i===0;d.disabled=i===view.length-1;
+      u.onclick=()=>move(it,view[i-1]);d.onclick=()=>move(it,view[i+1]);
+      const ok=mk('button','s','✔');ok.title='Concluir';ok.onclick=()=>done(it);
+      row.append(u,d,ok);
+    }else{
+      const x=mk('button','s x',P===it.id?'Excluir?':'✕');x.onclick=()=>del(it);row.appendChild(x);
+    }
+    L.appendChild(row);
+  });
+  if(pri){const b=mk('button','s','← Incluir mais atividades');b.onclick=()=>setMode('coleta');B.appendChild(b)}
+  else{const b=mk('button',null,'Definir prioridades →');b.disabled=items.length<2;b.onclick=()=>setMode('prioridade');B.appendChild(b)}
+  const c=mk('button','s','✔ Concluídas ('+dn.length+')');c.onclick=()=>setMode('concluidas');B.appendChild(c);
+  const rl=mk('button','s','📊 Relatório');rl.onclick=()=>setMode('relatorio');B.appendChild(rl);
+  if(LOCAL&&db){const m=mk('button','s','Importar lista salva neste navegador');m.onclick=imp;B.appendChild(m)}
+}
+$('add').onclick=add;
+$('sol').addEventListener('keydown',e=>{if(e.key==='Enter')$('resp').focus()});
+$('fil').onchange=e=>{F=e.target.value;render()};
+render();
+(async()=>{
+  try{db=window.claude?await claude.use('db'):null}catch(e){db=null}
+  if(!db){ready=true;note('Banco de dados não configurado. Preencha SUPABASE_URL e SUPABASE_KEY.');render();return}
+  col().onSnapshot(s=>{ALL=s.docs.map(d=>Object.assign({id:d.id},d.data()));ready=true;if(!ED)render()},()=>{ready=true;note('Não foi possível carregar os dados.');render()});
+})();
+</script>
+</body>
+</html>
